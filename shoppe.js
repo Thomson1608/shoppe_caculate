@@ -3,7 +3,7 @@ B1: Mở Google Chrome, truy cập và đăng nhập vào Shopee.vn
 B2: Vào mục "Đơn Mua": https://shope.ee/7pHF2r5lo0
 B3: Nhấn tổ hợp phím Ctrl+Shift+J để mở tab "Console"
 B4: Copy toàn bộ Code ở dưới. Paste vào tab "Console". Sau đó nhấn "Enter".
-B5: Ra 1 box nhỏ cạnh trang Shopee, các bạn kéo ra, copy và paste vào Excel hoặc Google Sheet để xem
+B5: Ra 1 box nhỏ cạnh trang Shopee, kéo ra, copy và paste vào Excel hoặc Google Sheet để xem
 Nguồn: @nttkq */
 
 const ORDER_STATUS = {
@@ -22,18 +22,61 @@ function formatCurrency(number) {
   }).format(Number(number || 0));
 }
 
-function toDateFromUnix(time) {
-  if (!time) return null;
-  const date = new Date(Number(time) * 1000);
+function parseUnixDate(ts) {
+  if (!ts) return null;
+  const d = new Date(Number(ts) * 1000);
   return {
-    day: date.getDate(),
-    month: date.getMonth() + 1,
-    year: date.getFullYear(),
+    day: d.getDate(),
+    month: d.getMonth() + 1,
+    year: d.getFullYear(),
+    timestamp: d.getTime(),
   };
 }
 
-function getOrderStatus(listType) {
-  return ORDER_STATUS[listType] || "Không rõ";
+function safeNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function toDateInput(date) {
+  const d = new Date(date);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
+}
+
+function parseDateOnly(value) {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  const d = new Date(`${value}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function inTimeRange(timestamp, fromDate, toDate) {
+  if (!timestamp) return false;
+  const t = Number(timestamp) * 1000;
+  const start = fromDate ? new Date(`${fromDate}T00:00:00`).getTime() : null;
+  const end = toDate ? new Date(`${toDate}T23:59:59.999`).getTime() : null;
+
+  if (start !== null && t < start) return false;
+  if (end !== null && t > end) return false;
+  return true;
+}
+
+function showResult(text) {
+  const box = document.createElement("textarea");
+  box.value = text;
+  box.style.position = "fixed";
+  box.style.top = "20px";
+  box.style.right = "20px";
+  box.style.width = "1100px";
+  box.style.height = "700px";
+  box.style.fontSize = "12px";
+  box.style.zIndex = "999999";
+  box.style.border = "1px solid #ccc";
+  box.style.padding = "12px";
+  box.style.background = "#fff";
+  document.body.appendChild(box);
 }
 
 async function getOrders(offset, limit) {
@@ -43,13 +86,56 @@ async function getOrders(offset, limit) {
     "&offset=" +
     offset;
 
-  const response = await fetch(url);
-  const json = await response.json();
-  const orderData = json?.data?.order_data || {};
-  return Array.isArray(orderData.details_list) ? orderData.details_list : [];
+  try {
+    const res = await fetch(url, {
+      credentials: "include",
+      headers: {
+        accept: "application/json, text/plain, */*",
+      },
+    });
+
+    const json = await res.json();
+    const list = json?.new_data?.order_or_checkout_data ?? [];
+    return Array.isArray(list) ? list : [];
+  } catch (error) {
+    console.error("Lỗi khi gọi API Shopee:", error);
+    return [];
+  }
 }
 
-function buildProductSummary(orderCard) {
+function getItemInfo(item) {
+  return item?.order_list_detail || item || {};
+}
+
+function getOrderStatus(detail) {
+  const listType = Number(detail?.list_type || 0);
+  return ORDER_STATUS[listType] || "Không rõ";
+}
+
+function getSubtotal(detail) {
+  const infoCard = detail?.info_card || {};
+  return safeNumber(infoCard?.subtotal || 0) / 1e5;
+}
+
+function getProductCount(detail) {
+  const infoCard = detail?.info_card || {};
+  return safeNumber(infoCard?.product_count || 0);
+}
+
+function getShopName(detail) {
+  const orderCard = detail?.info_card?.order_list_cards?.[0] || {};
+  const shopInfo = orderCard?.shop_info || {};
+  return `${shopInfo?.username || ""} - ${shopInfo?.shop_name || ""}`.trim();
+}
+
+function getProductName(detail) {
+  const orderCard = detail?.info_card?.order_list_cards?.[0] || {};
+  const groups = orderCard?.product_info?.item_groups || [];
+  return groups?.[0]?.items?.[0]?.name || "Không rõ";
+}
+
+function buildProductSummary(detail) {
+  const orderCard = detail?.info_card?.order_list_cards?.[0] || {};
   const groups = orderCard?.product_info?.item_groups || [];
 
   return groups
@@ -66,10 +152,25 @@ function buildProductSummary(orderCard) {
     .join("; ");
 }
 
-async function getAllOrders() {
+function getShippingTime(detail) {
+  return detail?.shipping?.tracking_info?.ctime || detail?.ctime || 0;
+}
+
+function getDateText(detail) {
+  const ts = getShippingTime(detail);
+  const date = parseUnixDate(ts);
+  return date ? `${date.day}/${date.month}/${date.year}` : "-";
+}
+
+function getDateStamp(detail) {
+  const ts = getShippingTime(detail);
+  return Number(ts || 0);
+}
+
+async function getAllOrders({ startDate = null, endDate = null } = {}) {
   const limit = 20;
   let offset = 0;
-  const allOrders = [
+  const rows = [
     [
       "Tên chung",
       "Số lượng",
@@ -82,81 +183,111 @@ async function getAllOrders() {
     ].join("\t"),
   ];
 
-  const currentYear = new Date().getFullYear();
-
   let totalSpend = 0;
   let totalThisYear = 0;
   let totalSixMonths = 0;
-  let totalOrders = 0;
-  let totalItems = 0;
+  let totalOrderCount = 0;
 
   while (true) {
     const data = await getOrders(offset, limit);
-    if (!data.length) break;
+    if (!data || data.length === 0) break;
 
     for (const item of data) {
-      const infoCard = item?.info_card || {};
-      const listType = Number(item?.list_type || 0);
-      const orderCard = infoCard?.order_list_cards?.[0] || {};
-      const shopInfo = orderCard?.shop_info || {};
-      const products = orderCard?.product_info?.item_groups || [];
-      const productName = products?.[0]?.items?.[0]?.name || "Không rõ";
+      try {
+        const detail = getItemInfo(item);
+        const listType = Number(detail?.list_type || 0);
+        const subtotal = getSubtotal(detail);
+        const productCount = getProductCount(detail);
+        const productName = getProductName(detail);
+        const shopName = getShopName(detail);
+        const statusText = getOrderStatus(detail);
+        const dateText = getDateText(detail);
 
-      const productCount = Number(infoCard?.product_count || 0);
-      const subtotal = Number(infoCard?.subtotal || 0) / 1e5;
-      const statusText = getOrderStatus(listType);
-      const shopName = `${shopInfo?.username || ""} - ${shopInfo?.shop_name || ""}`.trim();
-      const productSummary = buildProductSummary(orderCard);
-      const date = toDateFromUnix(item?.shipping?.tracking_info?.ctime || item?.ctime || 0);
-      const dateText = date ? `${date.day}/${date.month}/${date.year}` : "-";
+        const orderDateStamp = getDateStamp(detail);
+        const inRange = inTimeRange(orderDateStamp, startDate, endDate);
 
-      const isValidOrder = listType !== 4 && listType !== 12;
-      if (isValidOrder) {
-        totalSpend += subtotal;
-        totalOrders += 1;
-        totalItems += productCount;
+        // Nếu có filter date, chỉ lấy các order nằm trong khoảng đó.
+        if (startDate || endDate) {
+          if (!inRange) continue;
+        }
 
-        if (date && date.year === currentYear) {
-          totalThisYear += subtotal;
-          if (date.month >= 7 && date.month <= 12) {
-            totalSixMonths += subtotal;
+        const isValidOrder = listType !== 4 && listType !== 12;
+
+        if (isValidOrder) {
+          totalSpend += subtotal;
+          totalOrderCount += 1;
+
+          const date = parseUnixDate(orderDateStamp);
+          const currentYear = new Date().getFullYear();
+          if (date && date.year === currentYear) {
+            totalThisYear += subtotal;
+            if (date.month >= 7 && date.month <= 12) {
+              totalSixMonths += subtotal;
+            }
           }
         }
-      }
 
-      allOrders.push(
-        [
-          productName,
-          productCount,
-          formatCurrency(subtotal),
-          statusText,
-          shopName,
-          productSummary,
-          isValidOrder ? subtotal : 0,
-          dateText,
-        ].join("\t")
-      );
+        const orderCard = detail?.info_card?.order_list_cards?.[0] || {};
+        rows.push(
+          [
+            productName,
+            productCount,
+            formatCurrency(subtotal),
+            statusText,
+            shopName,
+            buildProductSummary(detail),
+            isValidOrder ? subtotal : 0,
+            dateText,
+          ].join("\t")
+        );
+      } catch (error) {
+        console.error("Lỗi khi xử lý item:", item, error);
+      }
     }
 
-    console.log("Đã lấy: " + offset);
     offset += limit;
   }
 
-  const totalLine = ["Tổng cộng: ", `${totalOrders} đơn,`, formatCurrency(totalSpend)].join("\t");
-  const totalThisYearLine = ["Tổng cộng trong năm nay: ", `${totalThisYear > 0 ? "" : ""}`, formatCurrency(totalThisYear)].join("\t");
-  const totalSixMonthsLine = ["Tổng cộng 6 tháng cuối năm: ", formatCurrency(totalSixMonths)].join("\t");
+  const totalLine = [
+    "Tổng cộng: ",
+    `${totalOrderCount} đơn,`,
+    formatCurrency(totalSpend),
+  ].join("\t");
 
-  allOrders.push(totalLine);
-  allOrders.push(totalThisYearLine);
-  allOrders.push(totalSixMonthsLine);
+  const totalYearLine = [
+    "Tổng cộng trong năm nay: ",
+    formatCurrency(totalThisYear),
+  ].join("\t");
 
-  const result = allOrders.join("\r\n");
+  const totalSixMonthsLine = [
+    "Tổng cộng 6 tháng cuối năm: ",
+    formatCurrency(totalSixMonths),
+  ].join("\t");
+
+  rows.push(totalLine);
+  rows.push(totalYearLine);
+  rows.push(totalSixMonthsLine);
 
   console.log(totalLine);
-  console.log(totalThisYearLine);
+  console.log(totalYearLine);
   console.log(totalSixMonthsLine);
 
-  document.write(`<textarea style="width: 1000px; height: 600px; font-size: 12px;">${result}</textarea>`);
+  const result = rows.join("\r\n");
+  showResult(result);
+
+  return {
+    totalSpend,
+    totalThisYear,
+    totalSixMonths,
+    totalOrderCount,
+    rows,
+  };
 }
 
-getAllOrders();
+// CÁCH DÙNG FILTER THEO THỜI GIAN:
+// 1. Để lấy toàn bộ: getAllOrders();
+// 2. Để lọc theo khoảng thời gian: getAllOrders({ startDate: '2025-01-01', endDate: '2025-12-31' });
+// 3. Chỉ từ ngày bắt đầu: getAllOrders({ startDate: '2025-01-01' });
+// 4. Chỉ đến ngày kết thúc: getAllOrders({ endDate: '2025-12-31' });
+
+getAllOrders({ startDate: "2025-01-01", endDate: "2025-12-31" });
