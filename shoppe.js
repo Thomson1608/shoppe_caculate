@@ -29,7 +29,6 @@ function parseUnixDate(ts) {
     day: d.getDate(),
     month: d.getMonth() + 1,
     year: d.getFullYear(),
-    timestamp: d.getTime(),
   };
 }
 
@@ -52,14 +51,14 @@ function parseDateOnly(value) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function inTimeRange(timestamp, fromDate, toDate) {
+function inTimeRange(timestamp, startDate, endDate) {
   if (!timestamp) return false;
-  const t = Number(timestamp) * 1000;
-  const start = fromDate ? new Date(`${fromDate}T00:00:00`).getTime() : null;
-  const end = toDate ? new Date(`${toDate}T23:59:59.999`).getTime() : null;
+  const ts = Number(timestamp) * 1000;
+  const start = startDate ? new Date(`${startDate}T00:00:00`).getTime() : null;
+  const end = endDate ? new Date(`${endDate}T23:59:59.999`).getTime() : null;
 
-  if (start !== null && t < start) return false;
-  if (end !== null && t > end) return false;
+  if (start !== null && ts < start) return false;
+  if (end !== null && ts > end) return false;
   return true;
 }
 
@@ -103,7 +102,7 @@ async function getOrders(offset, limit) {
   }
 }
 
-function getItemInfo(item) {
+function getDetail(item) {
   return item?.order_list_detail || item || {};
 }
 
@@ -163,8 +162,7 @@ function getDateText(detail) {
 }
 
 function getDateStamp(detail) {
-  const ts = getShippingTime(detail);
-  return Number(ts || 0);
+  return Number(getShippingTime(detail) || 0);
 }
 
 async function getAllOrders({ startDate = null, endDate = null } = {}) {
@@ -194,7 +192,7 @@ async function getAllOrders({ startDate = null, endDate = null } = {}) {
 
     for (const item of data) {
       try {
-        const detail = getItemInfo(item);
+        const detail = getDetail(item);
         const listType = Number(detail?.list_type || 0);
         const subtotal = getSubtotal(detail);
         const productCount = getProductCount(detail);
@@ -202,13 +200,10 @@ async function getAllOrders({ startDate = null, endDate = null } = {}) {
         const shopName = getShopName(detail);
         const statusText = getOrderStatus(detail);
         const dateText = getDateText(detail);
-
         const orderDateStamp = getDateStamp(detail);
-        const inRange = inTimeRange(orderDateStamp, startDate, endDate);
 
-        // Nếu có filter date, chỉ lấy các order nằm trong khoảng đó.
         if (startDate || endDate) {
-          if (!inRange) continue;
+          if (!inTimeRange(orderDateStamp, startDate, endDate)) continue;
         }
 
         const isValidOrder = listType !== 4 && listType !== 12;
@@ -284,10 +279,9 @@ async function getAllOrders({ startDate = null, endDate = null } = {}) {
   };
 }
 
-// CÁCH DÙNG FILTER THEO THỜI GIAN:
-// 1. Để lấy toàn bộ: getAllOrders();
-// 2. Để lọc theo khoảng thời gian: getAllOrders({ startDate: '2025-01-01', endDate: '2025-12-31' });
-// 3. Chỉ từ ngày bắt đầu: getAllOrders({ startDate: '2025-01-01' });
-// 4. Chỉ đến ngày kết thúc: getAllOrders({ endDate: '2025-12-31' });
+// Ví dụ dùng:
+// getAllOrders();
+// getAllOrders({ startDate: "2025-01-01", endDate: "2025-12-31" });
+// getAllOrders({ startDate: "2025-10-01", endDate: "2025-10-31" });
 
 getAllOrders({ startDate: "2025-01-01", endDate: "2025-12-31" });
